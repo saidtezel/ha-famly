@@ -28,6 +28,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+from PIL import Image
 
 from .api import FamlyAuthError, FamlyClient, FamlyError
 from .const import CONF_BACKFILL_SINCE, CONF_IMMICH_ALBUM, CONF_IMMICH_ENTRY, DOMAIN
@@ -157,8 +158,22 @@ def write_photo_file(path: Path, data: bytes, taken: datetime) -> None:
         piexif.insert(piexif.dump(exif), str(path))
     except (piexif.InvalidImageDataError, ValueError, struct.error):
         _LOGGER.debug("Not a JPEG, leaving %s without EXIF date", path.name)
+    check_image(path)
     ts = taken.timestamp()
     os.utime(path, (ts, ts))
+
+
+class BrokenImageError(ValueError):
+    """The downloaded file is not a complete, decodable image."""
+
+
+def check_image(path: Path) -> None:
+    """Fully decode the image so a truncated download never reaches Immich."""
+    try:
+        with Image.open(path) as img:
+            img.load()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError) as err:
+        raise BrokenImageError(f"Downloaded image is incomplete or corrupt: {err}") from err
 
 
 # ------------------------------------------------------------------- sync
@@ -174,6 +189,11 @@ class PhotoSync:
         self.entry = entry
         self.client = client
         self._store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.photo_sync_v2.{entry.entry_id}"
+        )
+        # 0.2.0/0.2.1 uploaded truncated photos; forget that state so they
+        # are uploaded again, complete.
+        self._old_store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.photo_sync.{entry.entry_id}"
         )
         self._lock = asyncio.Lock()
@@ -210,6 +230,7 @@ class PhotoSync:
     # ------------------------------------------------------------ lifecycle
 
     async def async_start(self) -> None:
+        await self._old_store.async_remove()
         stored = await self._store.async_load() or {}
         self.uploaded = dict(stored.get("uploaded") or {})
         self.total_uploaded = int(stored.get("total_uploaded") or len(self.uploaded))
@@ -325,7 +346,7 @@ class PhotoSync:
                 await self._upload(photo, immich_entry.entry_id)
             except FamlyAuthError:
                 raise
-            except (FamlyError, HomeAssistantError, OSError) as err:
+            except (FamlyError, HomeAssistantError, OSError, BrokenImageError) as err:
                 errors.append(f"{photo.image_id}: {err}")
                 _LOGGER.warning("Could not upload Famly photo %s: %s", photo.image_id, err)
                 if len(errors) >= 5:
@@ -420,8 +441,8 @@ class PhotoSync:
         source_dir_id, base = self._media_dir()
         path = Path(base, UPLOAD_DIR, filename)
 
-        await self.hass.async_add_executor_job(write_photo_file, path, data, taken)
         try:
+            await self.hass.async_add_executor_job(write_photo_file, path, data, taken)
             service_data: dict[str, Any] = {
                 "config_entry_id": immich_entry_id,
                 "file": {

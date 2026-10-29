@@ -339,9 +339,25 @@ class FamlyClient:
                     raise FamlyConnectionError(f"Image download returned HTTP {resp.status}")
                 if resp.status >= 400:
                     raise FamlyError(f"Image download returned HTTP {resp.status}")
-                body = await resp.content.read(max_bytes + 1)
-                if len(body) > max_bytes:
-                    raise FamlyError("Image larger than allowed size")
+                # Read the whole body. StreamReader.read(n) returns whatever
+                # has arrived so far, not n bytes, which truncates photos.
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.content.iter_chunked(256 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise FamlyError("Image larger than allowed size")
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+                expected = resp.content_length
+                if (
+                    expected is not None
+                    and not resp.headers.get("Content-Encoding")
+                    and len(body) != expected
+                ):
+                    raise FamlyConnectionError(
+                        f"Incomplete image download ({len(body)} of {expected} bytes)"
+                    )
                 return body, resp.headers.get("Content-Type", "")
         except (aiohttp.ClientError, TimeoutError) as err:
             raise FamlyConnectionError(str(err)) from err

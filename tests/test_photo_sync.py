@@ -382,3 +382,102 @@ async def test_diagnostics_show_shape_not_content(
     assert sample["createdDate"] == "9999-99-99 99:99:99.999999"
     text = str(diag)
     assert "painted" not in text and "secret" not in text and "parent@example.com" not in text
+
+
+# --------------------------------------------------- truncated downloads
+
+
+def _big_jpeg() -> bytes:
+    import random
+
+    rnd = random.Random(1)
+    img = Image.new("RGB", (400, 300))
+    img.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(400 * 300)])
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=95)
+    return buf.getvalue()
+
+
+async def test_download_reads_whole_body_across_chunks(socket_enabled):
+    """Regression: StreamReader.read(n) returned only the first chunk."""
+    import asyncio
+
+    import aiohttp
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from custom_components.famly.api import FamlyClient
+
+    payload = _big_jpeg()
+
+    async def handler(request):
+        resp = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+        resp.content_length = len(payload)
+        await resp.prepare(request)
+        for i in range(0, len(payload), 4096):
+            await resp.write(payload[i : i + 4096])
+            await asyncio.sleep(0.001)
+        return resp
+
+    app = web.Application()
+    app.router.add_get("/img.jpg", handler)
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        client = FamlyClient(session, "https://app.famly.co", "a", "b")
+        body, ctype = await client.download(str(server.make_url("/img.jpg")))
+    assert body == payload
+    assert ctype == "image/jpeg"
+
+
+async def test_download_cut_off_raises(socket_enabled):
+    import aiohttp
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from custom_components.famly.api import FamlyClient, FamlyConnectionError
+
+    payload = _big_jpeg()
+
+    async def handler(request):
+        resp = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+        resp.content_length = len(payload)
+        await resp.prepare(request)
+        await resp.write(payload[: len(payload) // 2])
+        request.transport.close()
+        return resp
+
+    app = web.Application()
+    app.router.add_get("/img.jpg", handler)
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        client = FamlyClient(session, "https://app.famly.co", "a", "b")
+        with pytest.raises(FamlyConnectionError):
+            await client.download(str(server.make_url("/img.jpg")))
+
+
+def test_write_photo_file_rejects_truncated(tmp_path: Path):
+    from custom_components.famly.photo_sync import BrokenImageError
+
+    data = _big_jpeg()
+    with pytest.raises(BrokenImageError):
+        write_photo_file(tmp_path / "x.jpg", data[: len(data) // 2], datetime.now(UTC))
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_truncated_photo_is_not_uploaded(
+    hass, mock_client, config_entry, immich_entry, uploads, media_dir, no_pause
+):
+    sync = await _setup(hass, config_entry, mock_client, immich_entry)
+    await sync.async_sync()
+    sync.newest_synced = datetime.fromisoformat("2026-10-28T12:00:00+00:00")
+    data = _big_jpeg()
+    mock_client.download.return_value = (data[: len(data) // 2], "image/jpeg")
+    mock_client.get_feed.return_value = [_post("p", "2026-10-28T15:00:00+00:00", "x1")]
+
+    assert await sync.async_sync() == 0
+    assert uploads == []
+    assert "incomplete or corrupt" in sync.last_error
+    assert "x1" not in sync.uploaded
+    assert not any((media_dir / UPLOAD_DIR).iterdir())
+
+    # Next run gets the full file and uploads it.
+    mock_client.download.return_value = (data, "image/jpeg")
+    assert await sync.async_sync() == 1

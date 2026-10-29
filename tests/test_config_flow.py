@@ -100,3 +100,15 @@ async def test_reauth_wrong_account(hass: HomeAssistant, mock_client, config_ent
         result["flow_id"], {"password": "x"}
     )
     assert result["reason"] == "wrong_account"
+
+
+async def test_unexpected_famly_reply_is_shown(hass: HomeAssistant, mock_client):
+    from custom_components.famly.api import FamlyError
+
+    mock_client.login.side_effect = FamlyError("HTTP 400 from /graphql: bad header")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
+    assert result["errors"] == {"base": "unknown"}
+    assert "bad header" in result["description_placeholders"]["error_detail"]

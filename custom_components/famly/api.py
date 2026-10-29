@@ -11,6 +11,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import date
+from json import loads as json_loads
 from typing import Any
 
 import aiohttp
@@ -104,13 +105,18 @@ class FamlyClient:
             "POST", "/graphql", params={"Authenticate": ""}, json=payload, token=None
         )
         if not isinstance(data, dict):
-            raise FamlyError("Unexpected login response")
-        if data.get("errors") and not data.get("data"):
-            raise FamlyAuthError(_first_error(data))
+            raise FamlyError(f"Unexpected login response: {_snippet(str(data))}")
+        _LOGGER.debug("Famly login response type: %s", _login_typename(data))
+        if data.get("errors") and not (data.get("data") or {}).get("me"):
+            raise FamlyError(f"Famly rejected the login request: {_first_error(data)}")
         try:
             result = data["data"]["me"]["authenticateWithPassword"]
         except (KeyError, TypeError) as err:
-            raise FamlyAuthError(_first_error(data) or "Login failed") from err
+            raise FamlyError(
+                f"Unexpected login response: {_snippet(str(data))}"
+            ) from err
+        if not isinstance(result, dict):
+            raise FamlyError(f"Unexpected login response: {_snippet(str(data))}")
 
         typename = result.get("__typename")
         if typename == "AuthenticationSucceeded" and result.get("accessToken"):
@@ -150,12 +156,11 @@ class FamlyClient:
         json: Any = None,
         token: str | None,
     ) -> Any:
+        # Same minimal header set famly-fetch uses; the web app's extra
+        # x-famly-* headers are not needed and may be validated server-side.
         headers = {
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
-            "x-famly-installationid": self.installation_id,
-            "x-famly-platform": "html",
-            "x-famly-request-uuid": str(uuid.uuid4()),
         }
         if token:
             headers["x-famly-accesstoken"] = token
@@ -173,10 +178,18 @@ class FamlyClient:
                     raise _SessionExpired
                 if resp.status == 429 or resp.status >= 500:
                     raise FamlyConnectionError(f"Famly returned HTTP {resp.status}")
+                text = await resp.text()
                 if resp.status >= 400:
-                    text = await resp.text()
-                    raise FamlyError(f"HTTP {resp.status} for {path}: {text[:200]}")
-                return await resp.json(content_type=None)
+                    raise FamlyError(
+                        f"HTTP {resp.status} from {path}: {_snippet(text)}"
+                    )
+                try:
+                    return json_loads(text)
+                except ValueError as err:
+                    raise FamlyError(
+                        f"Non-JSON response (HTTP {resp.status}) from {path}: "
+                        f"{_snippet(text)}"
+                    ) from err
         except (aiohttp.ClientError, TimeoutError) as err:
             raise FamlyConnectionError(str(err)) from err
 
@@ -283,6 +296,17 @@ class FamlyClient:
 
 class _SessionExpired(Exception):
     """Internal: the server rejected the token."""
+
+
+def _snippet(text: str, limit: int = 300) -> str:
+    return " ".join(text.split())[:limit]
+
+
+def _login_typename(data: dict[str, Any]) -> str | None:
+    try:
+        return data["data"]["me"]["authenticateWithPassword"]["__typename"]
+    except (KeyError, TypeError):
+        return None
 
 
 def _first_error(data: Any) -> str:

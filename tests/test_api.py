@@ -103,3 +103,15 @@ async def test_no_token_logs_in_first():
     client = _client()
     client._raw = AsyncMock(side_effect=[_login_ok("t"), {"me": 1}])
     assert await client.get_me() == {"me": 1}
+
+
+async def test_graphql_error_on_login_is_reported_not_auth():
+    from custom_components.famly.api import FamlyError
+
+    client = _client()
+    client._raw = AsyncMock(
+        return_value={"errors": [{"message": "Unknown field"}], "data": None}
+    )
+    with pytest.raises(FamlyError, match="Unknown field") as exc:
+        await client.login()
+    assert not isinstance(exc.value, FamlyAuthError)

@@ -111,6 +111,8 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    _error_detail: str = ""
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -128,9 +130,12 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             except FamlyError as err:
                 errors["base"] = _error_key(err)
-            except Exception:
+                self._error_detail = str(err)
+                _LOGGER.warning("Famly login failed (%s): %s", errors["base"], err)
+            except Exception as err:
                 _LOGGER.exception("Unexpected error validating Famly login")
                 errors["base"] = "unknown"
+                self._error_detail = f"{type(err).__name__}: {err}"
             else:
                 if not info["children"]:
                     errors["base"] = "no_children"
@@ -155,6 +160,7 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
                 {k: v for k, v in (user_input or {}).items() if k != CONF_PASSWORD},
             ),
             errors=errors,
+            description_placeholders={"error_detail": self._error_detail},
         )
 
     async def async_step_reauth(
@@ -178,9 +184,12 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             except FamlyError as err:
                 errors["base"] = _error_key(err)
-            except Exception:
+                self._error_detail = str(err)
+                _LOGGER.warning("Famly login failed (%s): %s", errors["base"], err)
+            except Exception as err:
                 _LOGGER.exception("Unexpected error validating Famly login")
                 errors["base"] = "unknown"
+                self._error_detail = f"{type(err).__name__}: {err}"
             else:
                 await self.async_set_unique_id(info["login_id"])
                 self._abort_if_unique_id_mismatch(reason="wrong_account")
@@ -196,5 +205,8 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=REAUTH_SCHEMA,
             errors=errors,
-            description_placeholders={"email": entry.data[CONF_EMAIL]},
+            description_placeholders={
+                "email": entry.data[CONF_EMAIL],
+                "error_detail": self._error_detail,
+            },
         )

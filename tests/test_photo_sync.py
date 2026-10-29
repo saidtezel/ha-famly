@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -38,40 +38,64 @@ def _jpeg() -> bytes:
     return buf.getvalue()
 
 
-def _post(post_id: str, created: str, *image_ids: str) -> dict:
-    return {
+def _famly_time(iso: str) -> str:
+    """Famly's REST format: '2026-10-28 14:05:09.000000', UTC, no zone."""
+    return datetime.fromisoformat(iso).astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.000000")
+
+
+def _post(post_id: str, created: str, *image_ids: str, system: str | None = None) -> dict:
+    item = {
         "feedItemId": f"fi-{post_id}",
         "originatorId": f"Post:{post_id}",
-        "createdDate": created,
+        "createdDate": _famly_time(created),
         "body": "Today we painted",
         "images": [
             {
                 "imageId": iid,
-                "prefix": "https://img.famly.example/image/abc",
-                "key": f"{iid}.jpg",
-                "width": 8,
-                "height": 8,
+                "url": f"https://img.famly.example/image/abc/600x450/{iid}.jpg?expires=1",
+                "url_big": f"https://img.famly.example/image/abc/1024x768/{iid}.jpg?expires=1",
+                "width": 4032,
+                "height": 3024,
+                "createdAt": {"date": _famly_time(created), "timezone": "UTC"},
             }
             for iid in image_ids
         ],
+        "videos": [],
     }
+    if system:
+        item["systemPostTypeClass"] = system
+    return item
 
 
 # ------------------------------------------------------------- pure helpers
 
 
-def test_feed_photos_only_posts():
-    assert feed_photos({"originatorId": "Event:1", "images": [{"imageId": "x"}]}) == []
+def test_feed_photos_real_format():
     photos = feed_photos(_post("p1", "2026-10-28T13:05:00+00:00", "i1", "i2"))
     assert [p.image_id for p in photos] == ["i1", "i2"]
-    assert photos[0].url == "https://img.famly.example/image/abc/i1.jpg"
+    # Full resolution: size segment rewritten to the original dimensions.
+    assert photos[0].url == "https://img.famly.example/image/abc/4032x3024/i1.jpg?expires=1"
+    # Zone-less Famly timestamp is read as UTC.
     assert photos[0].posted == datetime.fromisoformat("2026-10-28T13:05:00+00:00")
+
+
+def test_feed_photos_skips_system_posts_only():
+    assert feed_photos(_post("s", "2026-10-28T13:05:00+00:00", "x", system="CheckinPost")) == []
+    item = _post("p", "2026-10-28T13:05:00+00:00", "y")
+    item["originatorId"] = "SomethingElse:1"
+    assert len(feed_photos(item)) == 1
+
+
+def test_feed_photos_prefers_image_time():
+    item = _post("p", "2026-10-28T15:00:00+00:00", "y")
+    item["images"][0]["createdAt"] = {"date": "2026-10-28 14:59:00.000000", "timezone": "UTC"}
+    assert feed_photos(item)[0].posted == datetime.fromisoformat("2026-10-28T14:59:00+00:00")
 
 
 def test_feed_photos_secret_image():
     item = {
         "originatorId": "Post:9",
-        "createdDate": "2026-10-28T13:05:00+00:00",
+        "createdDate": "2026-10-28 13:05:00.000000",
         "images": [
             {
                 "id": "s1",
@@ -311,3 +335,50 @@ async def test_options_flow(hass, mock_client, config_entry, immich_entry):
     }
     # Reloaded with sync on: the button now exists.
     assert hass.states.get("button.famly_pat_parent_sync_photos_to_immich")
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_paging_sends_rfc3339_older_than(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.side_effect = [
+        [_post("p2", "2026-10-28T14:00:00+00:00", "b1")],
+        [_post("p1", "2026-10-05T14:00:00+00:00", "a1")],
+        [],
+    ]
+    assert await sync.async_sync() == 2
+    second = mock_client.get_feed.call_args_list[1].args
+    assert second[0] == "fi-p2"
+    assert second[1] == "2026-10-28T14:00:00Z"
+    assert sync.stats["feed_items"] == 2
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_empty_feed_does_not_finish_import(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.return_value = []
+    assert await sync.async_sync() == 0
+    assert sync.backfill_done_for is None
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_diagnostics_show_shape_not_content(
+    hass, mock_client, config_entry, immich_entry, no_pause
+):
+    from custom_components.famly.diagnostics import async_get_config_entry_diagnostics
+
+    await _setup(hass, config_entry, mock_client, immich_entry)
+    mock_client.get_feed.return_value = [_post("p", "2026-10-28T14:00:00+00:00", "a1")]
+    diag = await async_get_config_entry_diagnostics(hass, config_entry)
+    sample = diag["feed_probe"]["sample"][0]
+    assert sample["photos_recognised"] == 1
+    assert sample["createdDate"] == "9999-99-99 99:99:99.999999"
+    text = str(diag)
+    assert "painted" not in text and "secret" not in text and "parent@example.com" not in text

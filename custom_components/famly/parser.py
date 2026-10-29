@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -114,15 +114,20 @@ class ChildState:
 
 
 def parse_dt(value: Any) -> datetime | None:
-    """Parse an ISO timestamp from Famly, returning an aware datetime."""
+    """Parse a Famly timestamp into an aware datetime.
+
+    The v2 endpoints send ISO 8601 with an offset. The older REST endpoints
+    (feed, me) send "2026-05-06 19:02:44.000000": space-separated, no zone,
+    and in UTC. Both are accepted; zone-less values are taken as UTC.
+    """
     if not value or not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.strip())
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return None
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 

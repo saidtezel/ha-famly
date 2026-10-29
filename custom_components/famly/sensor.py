@@ -264,4 +264,5 @@ class FamlyPhotoSyncSensor(FamlyAccountEntity, SensorEntity):
             "import_complete": bool(sync.backfill_since)
             and sync.backfill_done_for == sync.backfill_since,
             "last_error": sync.last_error,
+            "last_scan": sync.stats,
         }

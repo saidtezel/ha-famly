@@ -78,7 +78,8 @@ Pushes every photo the nursery posts in the news feed to your [Immich](https://i
 - Famly strips all photo metadata, so the post's date and time is written back into the EXIF data and file timestamp before upload. Photos land on the right day in Immich's timeline.
 - Uploaded photo IDs are remembered, so nothing is sent twice. Failed uploads are retried on the next run.
 - Without an import date, the first run only records a starting point: you get photos posted from then on. An import is paced at up to 60 photos per hour, oldest first, until it catches up.
-- The **Photos uploaded to Immich** sensor shows the running total, with the last run, photos still waiting, and the last error as attributes.
+- The **Photos uploaded to Immich** sensor shows the running total, with the last run, photos still waiting, the last error and what the last scan found (`last_scan`) as attributes. Each run also logs a one-line summary at info level.
+- If nothing arrives, **Download diagnostics** on the integration: it includes the structure of the latest feed page (field names, date formats, counts; no text, names or photo links) and how many photos the integration recognised.
 
 Needs the Immich integration set up in Home Assistant with its `immich.upload_file` action available, and a media folder (Home Assistant OS has `/media` by default).
 

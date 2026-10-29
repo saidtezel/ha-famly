@@ -316,7 +316,7 @@ class FamlyClient:
         self,
         cursor: str | None = None,
         older_than: str | None = None,
-        first: int = 20,
+        first: int = 10,
     ) -> list[dict[str, Any]]:
         """One page of the parent news feed, newest first."""
         params: dict[str, str] = {"first": str(first)}

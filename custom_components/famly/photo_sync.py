@@ -40,8 +40,8 @@ _LOGGER = logging.getLogger(__name__)
 
 SYNC_INTERVAL = timedelta(hours=1)
 FIRST_RUN_DELAY = 120  # seconds after setup
-FEED_PAGE_SIZE = 20
-MAX_PAGES_PER_RUN = 50
+FEED_PAGE_SIZE = 10  # Famly treats "first" as advisory
+MAX_PAGES_PER_RUN = 100
 MAX_UPLOADS_PER_RUN = 60
 OVERLAP = timedelta(days=2)  # re-check recent posts in case photos were added late
 PAUSE_SECONDS = 1.0
@@ -64,38 +64,65 @@ class FeedPhoto:
 
 
 def feed_photos(item: dict[str, Any]) -> list[FeedPhoto]:
-    """Photos attached to one feed item. Only real posts, not system items."""
-    if not str(item.get("originatorId") or "").startswith("Post:"):
+    """Photos attached to one feed item.
+
+    Automated posts (sign-in notices and the like) carry systemPostTypeClass
+    and are skipped; everything a person posted is included.
+    """
+    if item.get("systemPostTypeClass"):
         return []
-    posted = parse_dt(item.get("createdDate"))
+    post_date = parse_dt(item.get("createdDate"))
     photos: list[FeedPhoto] = []
     for img in item.get("images") or []:
         if not isinstance(img, dict):
             continue
         image_id = img.get("imageId") or img.get("id")
         url = _image_url(img)
-        taken = posted or parse_dt(img.get("createdAt"))
+        taken = _image_time(img) or post_date
         if image_id and url and taken:
             photos.append(FeedPhoto(str(image_id), url, taken))
     return photos
 
 
+def _image_time(img: dict[str, Any]) -> datetime | None:
+    """Image createdAt is an object: {"date": "...", "timezone": "Europe/London"}."""
+    created = img.get("createdAt")
+    if isinstance(created, dict):
+        return parse_dt(created.get("date"))
+    return parse_dt(created)
+
+
+_SIZE_SEGMENT = re.compile(r"/(\d+)x(\d+)/")
+
+
 def _image_url(img: dict[str, Any]) -> str | None:
-    secret = img.get("secret")
-    if isinstance(secret, dict) and secret.get("prefix") and secret.get("key"):
-        url = f"{secret['prefix']}/{secret['key']}"
-        if secret.get("path"):
-            url += f"/{secret['path']}"
-        if secret.get("expires"):
-            url += f"?expires={secret['expires']}"
-        return url
-    if img.get("prefix") and img.get("key"):
-        # Original resolution, as used by famly-fetch.
-        return f"{img['prefix']}/{img['key']}"
+    """Highest-resolution URL for a feed image.
+
+    Famly's CDN URLs carry the served size as a "/WxH/" path segment and will
+    serve any size up to the original, so ask for the original dimensions.
+    """
     big = img.get("big")
-    if isinstance(big, dict) and big.get("url"):
-        return str(big["url"])
-    return img.get("url_big") or img.get("url")
+    candidate = (
+        img.get("url_big")
+        or (big.get("url") if isinstance(big, dict) else None)
+        or img.get("url")
+    )
+    if not candidate:
+        secret = img.get("secret")
+        if isinstance(secret, dict) and secret.get("prefix") and secret.get("key"):
+            candidate = f"{secret['prefix']}/{secret['key']}"
+            if secret.get("path"):
+                candidate += f"/{secret['path']}"
+            if secret.get("expires"):
+                candidate += f"?expires={secret['expires']}"
+        elif img.get("prefix") and img.get("key"):
+            candidate = f"{img['prefix']}/{img['key']}"
+        else:
+            return None
+    width, height = img.get("width"), img.get("height")
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        return _SIZE_SEGMENT.sub(f"/{width}x{height}/", str(candidate), count=1)
+    return str(candidate)
 
 
 def clean_album_id(value: str | None) -> str | None:
@@ -159,6 +186,7 @@ class PhotoSync:
         self.last_uploaded = 0
         self.pending = 0
         self.last_error: str | None = None
+        self.stats: dict[str, int] = {}
 
     # ------------------------------------------------------------ settings
 
@@ -311,6 +339,25 @@ class PhotoSync:
             await asyncio.sleep(PAUSE_SECONDS)
 
         self.pending = len(todo) - uploaded
+        _LOGGER.info(
+            "Famly photo sync: %s feed item(s) on %s page(s), %s with images, "
+            "%s photo(s) in range, %s new, %s uploaded, %s failed",
+            self.stats.get("feed_items", 0),
+            self.stats.get("pages", 0),
+            self.stats.get("items_with_images", 0),
+            len(photos),
+            len(todo),
+            uploaded,
+            len(errors),
+        )
+        if self.stats.get("items_with_images") and not photos:
+            _LOGGER.warning(
+                "Famly feed has posts with images but none could be read; "
+                "the feed format may have changed. Download diagnostics for details"
+            )
+        if self.stats.get("feed_items", 0) == 0:
+            # Nothing came back at all: don't treat that as a finished import.
+            complete = False
         if self.pending == 0 and complete:
             newest = max((p.posted for p in photos), default=None)
             if newest and (self.newest_synced is None or newest > self.newest_synced):
@@ -329,26 +376,37 @@ class PhotoSync:
         photos: list[FeedPhoto] = []
         cursor: str | None = None
         older_than: str | None = None
+        self.stats = {"pages": 0, "feed_items": 0, "items_with_images": 0, "photos": 0}
         for page in range(MAX_PAGES_PER_RUN):
             if page:
                 await asyncio.sleep(PAUSE_SECONDS)
             items = await self.client.get_feed(cursor, older_than, FEED_PAGE_SIZE)
+            self.stats["pages"] += 1
             if not items:
                 return photos, True
             for item in items:
+                self.stats["feed_items"] += 1
+                if item.get("images"):
+                    self.stats["items_with_images"] += 1
                 posted = parse_dt(item.get("createdDate"))
                 if posted is None or posted >= stop_at:
-                    photos.extend(feed_photos(item))
+                    found = feed_photos(item)
+                    self.stats["photos"] += len(found)
+                    photos.extend(found)
             last = items[-1]
             last_posted = parse_dt(last.get("createdDate"))
             # Stop on the page's last item, not the first old one: pinned
             # posts can appear out of order at the top of the feed.
             if last_posted is not None and last_posted < stop_at:
                 return photos, True
-            cursor = last.get("feedItemId")
-            older_than = last.get("createdDate")
-            if not cursor and not older_than:
+            next_cursor = last.get("feedItemId")
+            if not next_cursor or next_cursor == cursor or last_posted is None:
+                _LOGGER.warning(
+                    "Famly feed paging stopped: cursor did not advance or post has no date"
+                )
                 return photos, True
+            cursor = next_cursor
+            older_than = last_posted.isoformat().replace("+00:00", "Z")
         return photos, False
 
     async def _upload(self, photo: FeedPhoto, immich_entry_id: str) -> None:

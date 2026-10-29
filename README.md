@@ -85,6 +85,10 @@ All on `https://app.famly.co` (or `.de`), authenticated with the `x-famly-access
 | `GET /api/v2/institutions/{id}/openinghours` | Polling schedule |
 | `POST /graphql` `NotificationUpdates` | Unread counts |
 
+## Trademarks
+
+Famly and the Famly logo are trademarks of Famly ApS. This project is not affiliated with or endorsed by Famly; the icon in `custom_components/famly/brand/` is used only to identify the service the integration connects to. It shows in Home Assistant 2026.3 and later.
+
 ## Development
 
 ```bash

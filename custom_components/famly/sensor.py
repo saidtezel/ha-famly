@@ -256,6 +256,12 @@ class FamlyPhotoSyncSensor(FamlyAccountEntity, SensorEntity):
         if not sync:
             return None
         return {
+            "status": sync.status,
+            "progress": (
+                f"{sync.progress_done} of {sync.progress_total}"
+                if sync.status != "idle" and sync.progress_total
+                else None
+            ),
             "last_run": sync.last_run.isoformat() if sync.last_run else None,
             "uploaded_last_run": sync.last_uploaded,
             "waiting": sync.pending,

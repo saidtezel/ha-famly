@@ -158,7 +158,7 @@
         "data_description": {
           "immich_entry_id": "An Immich integration already set up in Home Assistant.",
           "immich_album_id": "Optional. Paste the album's URL or ID from the Immich web app.",
-          "backfill_since": "Optional one-off import of older photos, paced at up to 60 an hour. Leave empty to only sync photos posted from now on."
+          "backfill_since": "Optional one-off import of older photos, from this date up to today. Runs in paced batches and slows down automatically if Famly or Immich push back. Leave empty to only sync photos posted from now on."
         }
       }
     },

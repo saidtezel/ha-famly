@@ -73,12 +73,16 @@ Pushes every photo the nursery posts in the news feed to your [Immich](https://i
 
 **How it works**
 
-- Checks the feed **once an hour** (and two minutes after Home Assistant starts). Use the **Sync photos to Immich** button to run it now.
+- Checks the feed **once an hour** (and two minutes after Home Assistant starts). Use the **Sync photos to Immich** button to run it now; it starts in the background.
 - Each photo is downloaded into `/media/famly_immich_upload/`, handed to `immich.upload_file`, then **deleted immediately**, whether the upload worked or not. Nothing is kept on Home Assistant; leftovers from an interrupted run are cleaned up at startup.
 - Famly strips all photo metadata, so the post's date and time is written back into the EXIF data and file timestamp before upload. Photos land on the right day in Immich's timeline.
 - Uploaded photo IDs are remembered, so nothing is sent twice. Failed uploads are retried on the next run.
-- Without an import date, the first run only records a starting point: you get photos posted from then on. An import is paced at up to 60 photos per hour, oldest first, until it catches up.
-- The **Photos uploaded to Immich** sensor shows the running total, with the last run, photos still waiting, the last error and what the last scan found (`last_scan`) as attributes. Each run also logs a one-line summary at info level.
+- Without an import date, the first run only records a starting point: you get photos posted from then on.
+- With an import date, one run imports everything from that date up to today, oldest first, in **batches of 20** (1 s between photos, 10 s between batches). Progress is saved after each batch, so a restart resumes where it left off.
+- **Rate limits and outages** (HTTP 429, 5xx, dropped connections, Immich unavailable) pause the run and retry the same photo, honouring Famly's `Retry-After` or backing off 30 s → 1 min → 2 min … up to 15 min. After 6 failures in a row it stops and resumes at the next hourly run.
+- Famly's photo links expire after about a day; if one has expired mid-import, the feed is read again for fresh links and the run carries on.
+- A photo that can't be read is skipped and retried on the next run; the import is only marked complete once every photo is in.
+- The **Photos uploaded to Immich** sensor shows the running total, with `status` (idle / scanning / uploading / waiting), `progress` (e.g. 120 of 600), photos still waiting, the last error and what the last scan found (`last_scan`) as attributes. Each run also logs a one-line summary at info level.
 - If nothing arrives, **Download diagnostics** on the integration: it includes the structure of the latest feed page (field names, date formats, counts; no text, names or photo links) and how many photos the integration recognised.
 
 Needs the Immich integration set up in Home Assistant with its `immich.upload_file` action available, and a media folder (Home Assistant OS has `/media` by default).

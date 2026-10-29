@@ -91,6 +91,18 @@ class FamlyConnectionError(FamlyError):
     """Network or server problem."""
 
 
+class FamlyRateLimitError(FamlyConnectionError):
+    """Famly asked us to slow down (HTTP 429)."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class FamlyLinkExpiredError(FamlyError):
+    """A signed image link is no longer valid; re-read the feed for a fresh one."""
+
+
 class FamlyAuthError(FamlyError):
     """Credentials rejected or session no longer valid."""
 
@@ -211,7 +223,11 @@ class FamlyClient:
             ) as resp:
                 if resp.status in (401, 403):
                     raise _SessionExpired
-                if resp.status == 429 or resp.status >= 500:
+                if resp.status == 429:
+                    raise FamlyRateLimitError(
+                        "Famly is rate limiting requests", _retry_after(resp.headers)
+                    )
+                if resp.status >= 500:
                     raise FamlyConnectionError(f"Famly returned HTTP {resp.status}")
                 text = await resp.text()
                 if resp.status >= 400:
@@ -335,8 +351,16 @@ class FamlyClient:
             async with self._session.get(
                 url, headers={"User-Agent": USER_AGENT}, timeout=DOWNLOAD_TIMEOUT
             ) as resp:
-                if resp.status == 429 or resp.status >= 500:
+                if resp.status == 429:
+                    raise FamlyRateLimitError(
+                        "Famly is rate limiting image downloads", _retry_after(resp.headers)
+                    )
+                if resp.status >= 500:
                     raise FamlyConnectionError(f"Image download returned HTTP {resp.status}")
+                if resp.status in (401, 403, 404, 410):
+                    raise FamlyLinkExpiredError(
+                        f"Image link rejected (HTTP {resp.status}); it has probably expired"
+                    )
                 if resp.status >= 400:
                     raise FamlyError(f"Image download returned HTTP {resp.status}")
                 # Read the whole body. StreamReader.read(n) returns whatever
@@ -381,6 +405,14 @@ class FamlyClient:
 
 class _SessionExpired(Exception):
     """Internal: the server rejected the token."""
+
+
+def _retry_after(headers: Any) -> float | None:
+    try:
+        value = float(headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 def _snippet(text: str, limit: int = 300) -> str:

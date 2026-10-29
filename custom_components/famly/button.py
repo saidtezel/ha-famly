@@ -33,4 +33,5 @@ class FamlySyncPhotosButton(FamlyAccountEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         assert self.coordinator.photo_sync
-        await self.coordinator.photo_sync.async_sync()
+        # Runs in the background: an import can take a while.
+        self.coordinator.photo_sync.async_request_sync()

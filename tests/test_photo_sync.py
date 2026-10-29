@@ -179,8 +179,14 @@ def uploads(hass: HomeAssistant, media_dir: Path):
 
 @pytest.fixture
 def no_pause():
-    with patch("custom_components.famly.photo_sync.PAUSE_SECONDS", 0):
-        yield
+    """Record waits instead of sleeping."""
+    waits: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    with patch("custom_components.famly.photo_sync._sleep", _fake_sleep):
+        yield waits
 
 
 async def _setup(hass, config_entry, mock_client, immich_entry, **options):
@@ -298,7 +304,9 @@ async def test_failed_upload_is_retried_and_cleaned_up(
     mock_client.get_feed.return_value = [_post("p", "2026-10-28T15:00:00+00:00", "x1")]
 
     assert await sync.async_sync() == 0
-    assert len(attempts) == 1
+    # Retried with growing back-off, then stopped until the next hourly run.
+    assert len(attempts) == 6
+    assert [w for w in no_pause if w >= 30] == [30.0, 60.0, 120.0, 240.0, 480.0]
     assert sync.pending == 1
     assert "Immich is down" in sync.last_error
     assert "x1" not in sync.uploaded
@@ -481,3 +489,156 @@ async def test_truncated_photo_is_not_uploaded(
     # Next run gets the full file and uploads it.
     mock_client.download.return_value = (data, "image/jpeg")
     assert await sync.async_sync() == 1
+
+
+# ---------------------------------------------------- batched import
+
+
+def _many_posts(count: int, start_day: int = 2) -> list[dict]:
+    """`count` posts, one photo each, newest first, spread over October."""
+    posts = []
+    for n in range(count):
+        day = start_day + (n % 25)
+        posts.append(
+            _post(f"p{n}", f"2026-10-{day:02d}T{8 + n % 9:02d}:{n % 60:02d}:00+00:00", f"img{n}")
+        )
+    posts.sort(key=lambda p: p["createdDate"], reverse=True)
+    return posts
+
+
+def _paged(posts: list[dict], size: int = 10):
+    """Serve `posts` page by page the way Famly does (cursor = last feedItemId)."""
+    pages = [posts[i : i + size] for i in range(0, len(posts), size)]
+
+    async def _get_feed(cursor=None, older_than=None, first=10):
+        if cursor is None:
+            return pages[0] if pages else []
+        for i, page in enumerate(pages):
+            if page and page[-1]["feedItemId"] == cursor:
+                return pages[i + 1] if i + 1 < len(pages) else []
+        return []
+
+    return _get_feed
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_import_runs_in_batches_until_done(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.side_effect = _paged(_many_posts(130))
+
+    assert await sync.async_sync() == 130
+    assert len(uploads) == 130
+    # Oldest first.
+    taken = [u["taken"] for u in uploads]
+    assert taken == sorted(taken)
+    # A 10s pause after each batch of 20 (none after the last photo).
+    assert no_pause.count(10.0) == 6
+    assert sync.backfill_done_for == "2026-10-01"
+    assert sync.pending == 0
+    state = hass.states.get("sensor.famly_pat_parent_photos_uploaded_to_immich")
+    assert state.state == "130"
+    assert state.attributes["status"] == "idle"
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_rate_limit_waits_and_retries_same_photo(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    from custom_components.famly.api import FamlyRateLimitError
+
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.side_effect = _paged(_many_posts(3))
+    good = mock_client.download.return_value
+    mock_client.download.side_effect = [
+        FamlyRateLimitError("slow down", retry_after=42),
+        good,
+        good,
+        good,
+    ]
+    assert await sync.async_sync() == 3
+    assert 42 in no_pause
+    assert sync.last_error is None
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_feed_rate_limit_is_retried(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    from custom_components.famly.api import FamlyRateLimitError
+
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    serve = _paged(_many_posts(15))
+    calls = {"n": 0}
+
+    async def _flaky(cursor=None, older_than=None, first=10):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise FamlyRateLimitError("slow down", retry_after=5)
+        return await serve(cursor, older_than, first)
+
+    mock_client.get_feed.side_effect = _flaky
+    assert await sync.async_sync() == 15
+    assert 5 in no_pause
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_expired_links_trigger_fresh_feed_read(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    from custom_components.famly.api import FamlyLinkExpiredError
+
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.side_effect = _paged(_many_posts(4))
+    good = mock_client.download.return_value
+    mock_client.download.side_effect = [good, FamlyLinkExpiredError("expired"), good, good, good]
+
+    assert await sync.async_sync() == 4
+    first_page_reads = [c for c in mock_client.get_feed.call_args_list if c.args[0] is None]
+    assert len(first_page_reads) == 2  # initial walk + one re-read
+    assert sync.backfill_done_for == "2026-10-01"
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_broken_photo_is_skipped_not_blocking(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.side_effect = _paged(_many_posts(3))
+    good = mock_client.download.return_value
+    mock_client.download.side_effect = [(b"not an image", "image/jpeg"), good, good]
+
+    assert await sync.async_sync() == 2
+    assert sync.pending == 1
+    assert sync.backfill_done_for is None  # retried next run, import not finished
+    assert "incomplete or corrupt" in sync.last_error
+
+
+@pytest.mark.freeze_time(NOW)
+async def test_button_starts_sync_in_background(
+    hass, mock_client, config_entry, immich_entry, uploads, no_pause
+):
+    sync = await _setup(
+        hass, config_entry, mock_client, immich_entry, **{CONF_BACKFILL_SINCE: "2026-10-01"}
+    )
+    mock_client.get_feed.side_effect = _paged(_many_posts(5))
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.famly_pat_parent_sync_photos_to_immich"},
+        blocking=True,
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert len(uploads) == 5
+    assert sync.status == "idle"

@@ -30,7 +30,14 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 from PIL import Image
 
-from .api import FamlyAuthError, FamlyClient, FamlyError
+from .api import (
+    FamlyAuthError,
+    FamlyClient,
+    FamlyConnectionError,
+    FamlyError,
+    FamlyLinkExpiredError,
+    FamlyRateLimitError,
+)
 from .const import CONF_BACKFILL_SINCE, CONF_IMMICH_ALBUM, CONF_IMMICH_ENTRY, DOMAIN
 from .parser import parse_dt
 
@@ -42,10 +49,23 @@ _LOGGER = logging.getLogger(__name__)
 SYNC_INTERVAL = timedelta(hours=1)
 FIRST_RUN_DELAY = 120  # seconds after setup
 FEED_PAGE_SIZE = 10  # Famly treats "first" as advisory
-MAX_PAGES_PER_RUN = 100
-MAX_UPLOADS_PER_RUN = 60
+MAX_FEED_PAGES = 5000  # safety stop for a runaway walk (~50,000 posts)
 OVERLAP = timedelta(days=2)  # re-check recent posts in case photos were added late
+
+# Pacing, modelled on famly-fetch: short gap between photos, longer pause
+# between batches. A run keeps going in batches until nothing is left.
 PAUSE_SECONDS = 1.0
+BATCH_SIZE = 20
+BATCH_PAUSE_SECONDS = 10.0
+
+# Back-off when Famly or Immich push back (429, 5xx, dropped connections).
+BACKOFF_START_SECONDS = 30.0
+BACKOFF_MAX_SECONDS = 900.0
+MAX_CONSECUTIVE_FAILURES = 6  # then stop and resume at the next hourly run
+MAX_FEED_RETRIES = 5
+MAX_REWALKS = 5  # fresh feed reads per run when signed links expire
+REWALK_AFTER = timedelta(hours=6)  # links last about a day; refresh well before
+
 MAX_REMEMBERED = 20000
 UPLOAD_DIR = "famly_immich_upload"
 STORAGE_VERSION = 1
@@ -207,6 +227,10 @@ class PhotoSync:
         self.pending = 0
         self.last_error: str | None = None
         self.stats: dict[str, int] = {}
+        self.status = "idle"
+        self.progress_done = 0
+        self.progress_total = 0
+        self._task: asyncio.Task | None = None
 
     # ------------------------------------------------------------ settings
 
@@ -246,9 +270,7 @@ class PhotoSync:
 
         @callback
         def _scheduled(_now: datetime) -> None:
-            self.entry.async_create_background_task(
-                self.hass, self.async_sync(), f"{DOMAIN} photo sync"
-            )
+            self.async_request_sync()
 
         self.entry.async_on_unload(
             async_track_time_interval(self.hass, _scheduled, SYNC_INTERVAL)
@@ -285,27 +307,42 @@ class PhotoSync:
 
     # ------------------------------------------------------------ the run
 
+    @callback
+    def async_request_sync(self) -> None:
+        """Start a sync in the background unless one is already running."""
+        if self._task and not self._task.done():
+            _LOGGER.debug("Photo sync already running")
+            return
+        self._task = self.entry.async_create_background_task(
+            self.hass, self.async_sync(), f"{DOMAIN} photo sync"
+        )
+
     async def async_sync(self) -> int:
-        """Run one sync. Returns how many photos were uploaded."""
+        """Run one sync until caught up. Returns how many photos were uploaded."""
         if self._lock.locked():
             _LOGGER.debug("Photo sync already running")
             return 0
         async with self._lock:
+            uploaded = 0
             try:
                 uploaded = await self._sync()
             except FamlyAuthError as err:
                 self.last_error = f"Famly login failed: {err}"
                 self.entry.async_start_reauth(self.hass)
-                uploaded = 0
             except (FamlyError, HomeAssistantError, OSError) as err:
                 self.last_error = str(err)
                 _LOGGER.warning("Famly photo sync failed: %s", err)
-                uploaded = 0
-            self.last_run = dt_util.utcnow()
-            self.last_uploaded = uploaded
-            await self._save()
-            self._notify()
+            finally:
+                self.status = "idle"
+                self.last_run = dt_util.utcnow()
+                self.last_uploaded = uploaded
+                await self._save()
+                self._notify()
             return uploaded
+
+    def _set_status(self, status: str) -> None:
+        self.status = status
+        self._notify()
 
     async def _sync(self) -> int:
         if not self.enabled:
@@ -321,7 +358,7 @@ class PhotoSync:
         backfill_pending = bool(since) and self.backfill_done_for != since
 
         if self.newest_synced is None and not backfill_pending:
-            # First run without a backfill: start from now, don't import history.
+            # First run without an import: start from now, don't import history.
             self.newest_synced = now
             self.last_error = None
             return 0
@@ -330,67 +367,166 @@ class PhotoSync:
         if self.newest_synced is not None:
             stops.append(self.newest_synced - OVERLAP)
         if backfill_pending and since:
-            start = dt_util.start_of_local_day(date.fromisoformat(since[:10]))
-            stops.append(start)
+            stops.append(dt_util.start_of_local_day(date.fromisoformat(since[:10])))
         stop_at = min(stops)
 
-        photos, complete = await self._collect(stop_at)
-        todo = sorted(
-            {p.image_id: p for p in photos if p.image_id not in self.uploaded}.values(),
-            key=lambda p: p.posted,
-        )
-        uploaded = 0
+        total_uploaded = 0
         errors: list[str] = []
-        for photo in todo[:MAX_UPLOADS_PER_RUN]:
+        outcome = "stopped"
+        photos: list[FeedPhoto] = []
+        complete = False
+        for _walk in range(MAX_REWALKS):
+            self._set_status("scanning")
+            walked_at = dt_util.utcnow()
+            photos, complete = await self._collect(stop_at)
+            todo = sorted(
+                {p.image_id: p for p in photos if p.image_id not in self.uploaded}.values(),
+                key=lambda p: p.posted,
+            )
+            self.progress_done, self.progress_total = 0, len(todo)
+            self._log_scan(len(photos), len(todo))
+
+            uploaded, outcome = await self._upload_all(
+                todo, immich_entry.entry_id, walked_at, errors
+            )
+            total_uploaded += uploaded
+            self.pending = sum(1 for p in todo if p.image_id not in self.uploaded)
+            if outcome != "rewalk":
+                break
+            _LOGGER.info("Famly photo links expired; reading the feed again")
+
+        caught_up = (
+            outcome == "done"
+            and self.pending == 0
+            and complete
+            and self.stats.get("feed_items", 0) > 0
+        )
+        if caught_up:
+            newest = max((p.posted for p in photos), default=None)
+            if newest and (self.newest_synced is None or newest > self.newest_synced):
+                self.newest_synced = newest
+            if backfill_pending:
+                self.backfill_done_for = since
+                _LOGGER.info("Famly photo import since %s is complete", since)
+
+        self.last_error = "; ".join(e.removeprefix("skip:") for e in errors[-3:]) or None
+        if total_uploaded:
+            _LOGGER.info("Uploaded %s Famly photo(s) to Immich", total_uploaded)
+        return total_uploaded
+
+    async def _upload_all(
+        self,
+        todo: list[FeedPhoto],
+        immich_entry_id: str,
+        walked_at: datetime,
+        errors: list[str],
+    ) -> tuple[int, str]:
+        """Upload in paced batches with back-off.
+
+        Returns (uploaded, outcome) where outcome is "done", "rewalk" (links
+        expired, read the feed again) or "stopped" (too many failures in a
+        row; the next hourly run resumes).
+        """
+        uploaded = 0
+        consecutive = 0
+        backoff = BACKOFF_START_SECONDS
+        index = 0
+        self._set_status("uploading")
+        while index < len(todo):
+            photo = todo[index]
+            if photo.image_id in self.uploaded:
+                index += 1
+                continue
+            if dt_util.utcnow() - walked_at > REWALK_AFTER:
+                return uploaded, "rewalk"
             try:
-                await self._upload(photo, immich_entry.entry_id)
+                await self._upload(photo, immich_entry_id)
             except FamlyAuthError:
                 raise
-            except (FamlyError, HomeAssistantError, OSError, BrokenImageError) as err:
-                errors.append(f"{photo.image_id}: {err}")
-                _LOGGER.warning("Could not upload Famly photo %s: %s", photo.image_id, err)
-                if len(errors) >= 5:
-                    break
+            except FamlyLinkExpiredError:
+                return uploaded, "rewalk"
+            except (FamlyConnectionError, HomeAssistantError) as err:
+                # Transient: rate limit, server error, dropped connection,
+                # truncated download, Immich unavailable. Wait, retry same photo.
+                consecutive += 1
+                retry_after = err.retry_after if isinstance(err, FamlyRateLimitError) else None
+                if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                    errors.append(f"{photo.image_id}: {err}")
+                    _LOGGER.warning(
+                        "Famly photo sync stopping after %s failures in a row (%s); "
+                        "it will resume at the next hourly run",
+                        consecutive,
+                        err,
+                    )
+                    return uploaded, "stopped"
+                delay = min(retry_after if retry_after is not None else backoff, BACKOFF_MAX_SECONDS)
+                backoff = min(backoff * 2, BACKOFF_MAX_SECONDS)
+                _LOGGER.info(
+                    "Famly photo upload failed (%s); waiting %.0fs before retrying", err, delay
+                )
+                self._set_status("waiting")
+                await _sleep(delay)
+                self._set_status("uploading")
                 continue
+            except (BrokenImageError, FamlyError, OSError) as err:
+                # This photo is the problem, not the connection: skip it this run.
+                errors.append(f"skip:{photo.image_id}: {err}")
+                _LOGGER.warning("Skipping Famly photo %s: %s", photo.image_id, err)
+                index += 1
+                continue
+
             self.uploaded[photo.image_id] = dt_util.utcnow().isoformat()
             self.total_uploaded += 1
             uploaded += 1
-            if uploaded % 10 == 0:
+            self.progress_done += 1
+            consecutive = 0
+            backoff = BACKOFF_START_SECONDS
+            index += 1
+            if uploaded % BATCH_SIZE == 0:
                 await self._save()
-            await asyncio.sleep(PAUSE_SECONDS)
+                self._notify()
+                _LOGGER.info(
+                    "Famly photo sync: %s of %s uploaded", self.progress_done, self.progress_total
+                )
+                if index < len(todo):
+                    await _sleep(BATCH_PAUSE_SECONDS)
+            elif index < len(todo):
+                await _sleep(PAUSE_SECONDS)
+        return uploaded, "done"
 
-        self.pending = len(todo) - uploaded
+    def _log_scan(self, in_range: int, new: int) -> None:
         _LOGGER.info(
             "Famly photo sync: %s feed item(s) on %s page(s), %s with images, "
-            "%s photo(s) in range, %s new, %s uploaded, %s failed",
+            "%s photo(s) in range, %s new",
             self.stats.get("feed_items", 0),
             self.stats.get("pages", 0),
             self.stats.get("items_with_images", 0),
-            len(photos),
-            len(todo),
-            uploaded,
-            len(errors),
+            in_range,
+            new,
         )
-        if self.stats.get("items_with_images") and not photos:
+        if self.stats.get("items_with_images") and not in_range:
             _LOGGER.warning(
                 "Famly feed has posts with images but none could be read; "
                 "the feed format may have changed. Download diagnostics for details"
             )
-        if self.stats.get("feed_items", 0) == 0:
-            # Nothing came back at all: don't treat that as a finished import.
-            complete = False
-        if self.pending == 0 and complete:
-            newest = max((p.posted for p in photos), default=None)
-            if newest and (self.newest_synced is None or newest > self.newest_synced):
-                self.newest_synced = newest
-            elif self.newest_synced is None:
-                self.newest_synced = now
-            if backfill_pending:
-                self.backfill_done_for = since
-        self.last_error = "; ".join(errors[:3]) if errors else None
-        if uploaded:
-            _LOGGER.info("Uploaded %s Famly photo(s) to Immich", uploaded)
-        return uploaded
+
+    async def _get_feed_page(
+        self, cursor: str | None, older_than: str | None
+    ) -> list[dict[str, Any]]:
+        """One feed page, retrying with back-off when Famly pushes back."""
+        backoff = BACKOFF_START_SECONDS
+        for attempt in range(MAX_FEED_RETRIES):
+            try:
+                return await self.client.get_feed(cursor, older_than, FEED_PAGE_SIZE)
+            except FamlyConnectionError as err:
+                if attempt == MAX_FEED_RETRIES - 1:
+                    raise
+                retry_after = err.retry_after if isinstance(err, FamlyRateLimitError) else None
+                delay = min(retry_after if retry_after is not None else backoff, BACKOFF_MAX_SECONDS)
+                backoff = min(backoff * 2, BACKOFF_MAX_SECONDS)
+                _LOGGER.info("Reading the Famly feed failed (%s); retrying in %.0fs", err, delay)
+                await _sleep(delay)
+        return []
 
     async def _collect(self, stop_at: datetime) -> tuple[list[FeedPhoto], bool]:
         """Walk the feed back to `stop_at`. Returns (photos, reached stop_at)."""
@@ -398,10 +534,10 @@ class PhotoSync:
         cursor: str | None = None
         older_than: str | None = None
         self.stats = {"pages": 0, "feed_items": 0, "items_with_images": 0, "photos": 0}
-        for page in range(MAX_PAGES_PER_RUN):
+        for page in range(MAX_FEED_PAGES):
             if page:
-                await asyncio.sleep(PAUSE_SECONDS)
-            items = await self.client.get_feed(cursor, older_than, FEED_PAGE_SIZE)
+                await _sleep(PAUSE_SECONDS)
+            items = await self._get_feed_page(cursor, older_than)
             self.stats["pages"] += 1
             if not items:
                 return photos, True
@@ -428,6 +564,8 @@ class PhotoSync:
                 return photos, True
             cursor = next_cursor
             older_than = last_posted.isoformat().replace("+00:00", "Z")
+            if page % 20 == 19:
+                self._notify()
         return photos, False
 
     async def _upload(self, photo: FeedPhoto, immich_entry_id: str) -> None:
@@ -477,6 +615,12 @@ class PhotoSync:
             for leftover in folder.iterdir():
                 if leftover.is_file() and leftover.name.startswith("famly_"):
                     _unlink(leftover)
+
+
+async def _sleep(seconds: float) -> None:
+    """Indirection so tests can skip real waiting."""
+    if seconds > 0:
+        await asyncio.sleep(seconds)
 
 
 def _unlink(path: Path) -> None:

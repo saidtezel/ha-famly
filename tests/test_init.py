@@ -7,7 +7,7 @@ from datetime import timedelta
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.famly.api import FamlyAuthError, FamlyConnectionError
@@ -89,6 +89,7 @@ async def test_new_activity_fires_event(
 
     fired: list[str] = []
 
+    @callback
     def _record(event):
         new = event.data["new_state"]
         old = event.data["old_state"]

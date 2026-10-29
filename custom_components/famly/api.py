@@ -21,18 +21,52 @@ _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 USER_AGENT = "HomeAssistant-Famly"
 
+# Copied from the app.famly.co web client. authenticateWithPassword returns a
+# union, so every field has to be selected through the AuthenticationResult
+# fragment rather than directly.
 AUTHENTICATE_MUTATION = """
 mutation Authenticate($email: EmailAddress!, $password: Password!, $deviceId: DeviceId, $legacy: Boolean) {
   me {
-    authenticateWithPassword(email: $email, password: $password, deviceId: $deviceId, legacy: $legacy) {
-      status
+    authenticateWithPassword(
+      email: $email
+      password: $password
+      deviceId: $deviceId
+      legacy: $legacy
+    ) {
       __typename
-      ... on AuthenticationFailed { errorDetails errorTitle }
-      ... on AuthenticationSucceeded { accessToken deviceId }
-      ... on AuthenticationChallenged {
-        loginId
-        choices { hmac requiresTwoFactor }
-      }
+      ...AuthenticationResult
+    }
+    __typename
+  }
+}
+
+fragment AuthenticationResult on AuthenticationResult {
+  status
+  __typename
+  ... on AuthenticationFailed {
+    status
+    errorDetails
+    errorTitle
+    __typename
+  }
+  ... on AuthenticationSucceeded {
+    accessToken
+    deviceId
+    __typename
+  }
+  ... on AuthenticationChallenged {
+    __typename
+    loginId
+    deviceId
+    expiresAt
+    choices {
+      hmac
+      requiresTwoFactor
+      __typename
+    }
+    requiredMfaSetup {
+      availableMethods
+      __typename
     }
   }
 }
@@ -98,7 +132,7 @@ class FamlyClient:
                 "email": self._email,
                 "password": self._password,
                 "deviceId": self.device_id,
-                "legacy": False,
+                "legacy": True,  # what the web app sends
             },
         }
         data = await self._raw(

@@ -115,3 +115,12 @@ async def test_graphql_error_on_login_is_reported_not_auth():
     with pytest.raises(FamlyError, match="Unknown field") as exc:
         await client.login()
     assert not isinstance(exc.value, FamlyAuthError)
+
+
+def test_login_selects_fields_through_result_fragment():
+    """authenticateWithPassword is a union; fields must go through the fragment."""
+    from custom_components.famly.api import AUTHENTICATE_MUTATION
+
+    body = AUTHENTICATE_MUTATION.split("fragment AuthenticationResult")[0]
+    assert "...AuthenticationResult" in body
+    assert "status" not in body

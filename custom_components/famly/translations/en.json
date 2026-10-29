@@ -1,0 +1,104 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Famly",
+        "description": "Sign in with the email and password you use for the Famly parent app. They are stored in Home Assistant and used to sign in again when the session expires.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "region": "Famly site"
+        },
+        "data_description": {
+          "region": "Use famly.de if you sign in at app.famly.de, otherwise famly.co."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to Famly again",
+        "description": "Famly rejected the stored login for {email}. Enter the current password.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Famly rejected the email or password.",
+      "auth_challenge": "Famly asked for an extra sign-in step (two-factor or choosing an account). This integration does not support that yet.",
+      "cannot_connect": "Could not reach Famly. Try again in a moment.",
+      "no_children": "This Famly login is not linked to any children.",
+      "unknown": "Unexpected error, see the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This Famly login is already set up.",
+      "reauth_successful": "Signed in again.",
+      "wrong_account": "That password belongs to a different Famly account."
+    }
+  },
+  "selector": {
+    "region": {
+      "options": {
+        "famly.co": "app.famly.co (UK, US, Nordics)",
+        "famly.de": "app.famly.de (Germany, Austria, Switzerland)"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "at_nursery": { "name": "At nursery" },
+      "sleeping": { "name": "Sleeping" },
+      "sick": { "name": "Sick" }
+    },
+    "calendar": {
+      "nursery": { "name": "Nursery" }
+    },
+    "event": {
+      "activity": {
+        "name": "Activity",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "check_in": "Signed in",
+              "check_out": "Signed out",
+              "room_change": "Changed room",
+              "nap_start": "Fell asleep",
+              "nap_end": "Woke up",
+              "nappy_change": "Nappy change",
+              "meal": "Meal",
+              "activity": "Other activity",
+              "sick": "Marked sick"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "latest_photo": { "name": "Latest photo" }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "at_nursery": "At nursery",
+          "picked_up": "Picked up",
+          "not_arrived": "Not arrived",
+          "sick": "Sick",
+          "absent": "Absent",
+          "holiday": "Holiday"
+        }
+      },
+      "room": { "name": "Room" },
+      "arrived_at": { "name": "Arrived" },
+      "left_at": { "name": "Picked up" },
+      "last_nap_start": { "name": "Last nap start" },
+      "last_nap_end": { "name": "Last nap end" },
+      "sleep_today": { "name": "Sleep today" },
+      "last_nappy_change": { "name": "Last nappy change" },
+      "nappy_changes_today": { "name": "Nappy changes today" },
+      "last_meal": { "name": "Last meal" },
+      "meals_today": { "name": "Meals today" },
+      "last_activity": { "name": "Last activity" },
+      "unread_messages": { "name": "Unread messages" },
+      "unseen_notifications": { "name": "Unseen notifications" }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+[{"period":{"from":"2026-10-28T00:00:00+00:00","to":"2026-10-29T00:00:00+00:00"},
+  "days":[{"day":"2026-10-28T00:00:00+00:00","day_localdate":"2026-10-28","events":[
+   {"originator":{"type":"Famly.Daycare:ChildCheckin","id":"ci-1"},"title":"7:30: Robin signed into Seedlings","subtitle":"","from":"2026-10-28T07:30:00+00:00","to":null,"embed":{"type":"CHECK_IN"}},
+   {"originator":{"type":"Famly.Daycare:ChildCheckin","id":"co-1"},"title":"9:00: Robin signed out of Seedlings","subtitle":"","from":"2026-10-28T09:00:00+00:00","to":null,"embed":{"type":"CHECK_OUT"}},
+   {"originator":{"type":"Famly.Daycare:ChildCheckin","id":"ci-2"},"title":"9:00: Robin signed into Garden","subtitle":"","from":"2026-10-28T09:00:00+00:00","to":null,"embed":{"type":"CHECK_IN"}},
+   {"originator":{"type":"Famly.Daycare:Action","id":"a-1"},"title":"Robin: Nappy Change - Wet","subtitle":"Robin","from":"2026-10-28T10:00:00+00:00","to":null,"embed":{"type":"childAction","actionType":"DIAPERCHANGE","diaperingType":"WET","note":null,"occuredOn":"2026-10-28T10:00:00+00:00"}},
+   {"originator":{"type":"Famly.Daycare:MealRegistration","id":"m-1"},"title":"Robin: Lunch","subtitle":"Robin","from":"2026-10-28T11:45:00+00:00","to":null,"embed":{"type":"mealRegistration","mealTypeId":"mt1"}},
+   {"originator":{"type":"Famly.Daycare:Nap","id":"n-1"},"title":"12:10 - : Robin is sleeping","subtitle":"Robin","from":"2026-10-28T12:10:00+00:00","to":null,"embed":{}},
+   {"originator":{"type":"Famly.Daycare:Event","id":"ev-1"},"title":"Autumn stay and play","subtitle":"Seedlings","from":"2026-10-28T14:00:00+00:00","to":"2026-10-28T15:00:00+00:00","embed":{"attending":true,"requireRsvp":true}}
+  ]}]}]

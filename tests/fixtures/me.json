@@ -1,0 +1,2 @@
+{"loginId":"login-1","name":{"fullName":"Pat Parent","firstName":"Pat"},"email":"parent@example.com",
+ "roles2":[{"targetId":"child-1","roleId":"r1","sourceType":"Famly.Daycare:Relation","targetType":"Famly.Daycare:Child","title":"Robin","subtitle":"Acorn Nursery","permissions":[],"features":[]}]}

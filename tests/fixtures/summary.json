@@ -1,0 +1,6 @@
+{"institution":{"institutionId":"inst-1","title":"Acorn Nursery","timezone":"Europe/London"},
+ "child":{"childId":"child-1","institutionId":"inst-1","groupId":"g1","name":{"firstName":"Robin","lastName":"Example","fullName":"Robin Example"},
+  "groupTitle":"Seedlings","isSick":false,"isAbsent":false,"hasVacation":false,"checkedIn":true,"checkinTime":"2026-10-28T07:30:00+00:00",
+  "pickupTime":null,"pickupName":"","keyWorkers":[{"employeeId":"e1","name":{"fullName":"Kim Keyworker"}}]},
+ "group":{"groupId":"g1","title":"Seedlings"},
+ "naps":[{"startTime":"2026-10-27T12:00:00+00:00","duration":1.5}]}

@@ -1,0 +1,28 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "sleeping": { "default": "mdi:sleep-off", "state": { "on": "mdi:sleep" } },
+      "sick": { "default": "mdi:emoticon-happy-outline", "state": { "on": "mdi:emoticon-sick-outline" } },
+      "at_nursery": { "default": "mdi:home-outline", "state": { "on": "mdi:human-child" } }
+    },
+    "calendar": { "nursery": { "default": "mdi:calendar-heart" } },
+    "event": { "activity": { "default": "mdi:timeline-text-outline" } },
+    "image": { "latest_photo": { "default": "mdi:camera-image" } },
+    "sensor": {
+      "status": { "default": "mdi:human-child" },
+      "room": { "default": "mdi:door" },
+      "arrived_at": { "default": "mdi:login" },
+      "left_at": { "default": "mdi:logout" },
+      "last_nap_start": { "default": "mdi:sleep" },
+      "last_nap_end": { "default": "mdi:weather-sunny" },
+      "sleep_today": { "default": "mdi:bed-clock" },
+      "last_nappy_change": { "default": "mdi:baby-face-outline" },
+      "nappy_changes_today": { "default": "mdi:counter" },
+      "last_meal": { "default": "mdi:silverware-fork-knife" },
+      "meals_today": { "default": "mdi:food-apple-outline" },
+      "last_activity": { "default": "mdi:timeline-clock-outline" },
+      "unread_messages": { "default": "mdi:message-badge-outline" },
+      "unseen_notifications": { "default": "mdi:bell-badge-outline" }
+    }
+  }
+}

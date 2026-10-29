@@ -12,9 +12,11 @@ from .api import FamlyAuthError, FamlyClient, FamlyError
 from .const import CONF_ACCESS_TOKEN, CONF_DEVICE_ID, CONF_REGION, DEFAULT_REGION, REGIONS
 from .coordinator import FamlyCoordinator
 from .parser import parse_children
+from .photo_sync import PhotoSync
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.CALENDAR,
     Platform.EVENT,
     Platform.IMAGE,
@@ -57,6 +59,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: FamlyConfigEntry) -> boo
 
     coordinator = FamlyCoordinator(hass, entry, client, children)
     await coordinator.async_config_entry_first_refresh()
+    coordinator.photo_sync = PhotoSync(hass, entry, client)
+    await coordinator.photo_sync.async_start()
     entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

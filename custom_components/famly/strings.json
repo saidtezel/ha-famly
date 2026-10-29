@@ -134,7 +134,36 @@
       },
       "unseen_notifications": {
         "name": "Unseen notifications"
+      },
+      "photos_uploaded": {
+        "name": "Photos uploaded to Immich"
       }
+    },
+    "button": {
+      "sync_photos": {
+        "name": "Sync photos to Immich"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Photo sync to Immich",
+        "description": "Every hour, new photos from the nursery news feed are downloaded, dated, uploaded to Immich and deleted from Home Assistant straight away. Leave Immich empty to turn this off.",
+        "data": {
+          "immich_entry_id": "Immich server",
+          "immich_album_id": "Album",
+          "backfill_since": "Also import photos posted since"
+        },
+        "data_description": {
+          "immich_entry_id": "An Immich integration already set up in Home Assistant.",
+          "immich_album_id": "Optional. Paste the album's URL or ID from the Immich web app.",
+          "backfill_since": "Optional one-off import of older photos, paced at up to 60 an hour. Leave empty to only sync photos posted from now on."
+        }
+      }
+    },
+    "error": {
+      "immich_required": "Choose an Immich server to use the album or import options."
     }
   }
 }

@@ -10,6 +10,9 @@ DOMAIN: Final = "famly"
 CONF_REGION: Final = "region"
 CONF_DEVICE_ID: Final = "device_id"
 CONF_ACCESS_TOKEN: Final = "access_token"
+CONF_IMMICH_ENTRY: Final = "immich_entry_id"
+CONF_IMMICH_ALBUM: Final = "immich_album_id"
+CONF_BACKFILL_SINCE: Final = "backfill_since"
 
 REGIONS: Final = {
     "famly.co": "https://app.famly.co",

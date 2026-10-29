@@ -19,6 +19,7 @@ import aiohttp
 _LOGGER = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
+DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=120)
 USER_AGENT = "HomeAssistant-Famly"
 
 # Copied from the app.famly.co web client. authenticateWithPassword returns a
@@ -310,6 +311,40 @@ class FamlyClient:
             "/api/v2/images/tagged",
             params={"childId": child_id, "limit": str(limit)},
         )
+
+    async def get_feed(
+        self,
+        cursor: str | None = None,
+        older_than: str | None = None,
+        first: int = 20,
+    ) -> list[dict[str, Any]]:
+        """One page of the parent news feed, newest first."""
+        params: dict[str, str] = {"first": str(first)}
+        if cursor:
+            params["cursor"] = cursor
+        if older_than:
+            params["olderThan"] = older_than
+        data = await self._request("GET", "/api/feed/feed/feed", params=params)
+        if not isinstance(data, dict):
+            raise FamlyError("Unexpected feed response")
+        return data.get("feedItems") or []
+
+    async def download(self, url: str, max_bytes: int = 50 * 1024 * 1024) -> tuple[bytes, str]:
+        """Fetch an image from Famly's image CDN. Returns (bytes, content type)."""
+        try:
+            async with self._session.get(
+                url, headers={"User-Agent": USER_AGENT}, timeout=DOWNLOAD_TIMEOUT
+            ) as resp:
+                if resp.status == 429 or resp.status >= 500:
+                    raise FamlyConnectionError(f"Image download returned HTTP {resp.status}")
+                if resp.status >= 400:
+                    raise FamlyError(f"Image download returned HTTP {resp.status}")
+                body = await resp.content.read(max_bytes + 1)
+                if len(body) > max_bytes:
+                    raise FamlyError("Image larger than allowed size")
+                return body, resp.headers.get("Content-Type", "")
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise FamlyConnectionError(str(err)) from err
 
     async def get_opening_hours(self, institution_id: str) -> list[dict[str, Any]]:
         data = await self._request(

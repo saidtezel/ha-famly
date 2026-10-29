@@ -172,6 +172,8 @@ async def async_setup_entry(
     entities.extend(
         FamlyAccountSensor(coordinator, description) for description in ACCOUNT_SENSORS
     )
+    if coordinator.photo_sync and coordinator.photo_sync.enabled:
+        entities.append(FamlyPhotoSyncSensor(coordinator))
     async_add_entities(entities)
 
 
@@ -221,3 +223,45 @@ class FamlyAccountSensor(FamlyAccountEntity, SensorEntity):
         if not data:
             return None
         return data.counts.get(self.entity_description.count_key)
+
+
+class FamlyPhotoSyncSensor(FamlyAccountEntity, SensorEntity):
+    """Total photos sent to Immich, with the last run's details."""
+
+    _attr_translation_key = "photos_uploaded"
+    _attr_native_unit_of_measurement = "photos"
+
+    def __init__(self, coordinator: FamlyCoordinator) -> None:
+        super().__init__(coordinator, "photos_uploaded")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        assert self.coordinator.photo_sync
+        self.async_on_remove(
+            self.coordinator.photo_sync.async_add_listener(self.async_write_ha_state)
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.photo_sync is not None
+
+    @property
+    def native_value(self) -> int | None:
+        sync = self.coordinator.photo_sync
+        return sync.total_uploaded if sync else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        sync = self.coordinator.photo_sync
+        if not sync:
+            return None
+        return {
+            "last_run": sync.last_run.isoformat() if sync.last_run else None,
+            "uploaded_last_run": sync.last_uploaded,
+            "waiting": sync.pending,
+            "synced_up_to": sync.newest_synced.isoformat() if sync.newest_synced else None,
+            "import_since": sync.backfill_since,
+            "import_complete": bool(sync.backfill_since)
+            and sync.backfill_done_for == sync.backfill_since,
+            "last_error": sync.last_error,
+        }

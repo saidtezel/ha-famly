@@ -1,12 +1,19 @@
 {
   "domain": "famly",
   "name": "Famly",
-  "codeowners": ["@saidtezel"],
+  "after_dependencies": [
+    "media_source"
+  ],
+  "codeowners": [
+    "@saidtezel"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/saidtezel/ha-famly",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/saidtezel/ha-famly/issues",
-  "requirements": [],
-  "version": "0.1.3"
+  "requirements": [
+    "piexif==1.1.3"
+  ],
+  "version": "0.2.0"
 }

@@ -8,11 +8,19 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    ConfigEntrySelector,
+    ConfigEntrySelectorConfig,
+    DateSelector,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -30,13 +38,17 @@ from .api import (
 )
 from .const import (
     CONF_ACCESS_TOKEN,
+    CONF_BACKFILL_SINCE,
     CONF_DEVICE_ID,
+    CONF_IMMICH_ALBUM,
+    CONF_IMMICH_ENTRY,
     CONF_REGION,
     DEFAULT_REGION,
     DOMAIN,
     REGIONS,
 )
 from .parser import parse_children
+from .photo_sync import clean_album_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,6 +122,11 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Famly."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> FamlyOptionsFlow:
+        return FamlyOptionsFlow()
 
     _error_detail: str = ""
 
@@ -209,4 +226,42 @@ class FamlyConfigFlow(ConfigFlow, domain=DOMAIN):
                 "email": entry.data[CONF_EMAIL],
                 "error_detail": self._error_detail,
             },
+        )
+
+
+OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_IMMICH_ENTRY): ConfigEntrySelector(
+            ConfigEntrySelectorConfig(integration="immich")
+        ),
+        vol.Optional(CONF_IMMICH_ALBUM): TextSelector(),
+        vol.Optional(CONF_BACKFILL_SINCE): DateSelector(),
+    }
+)
+
+
+class FamlyOptionsFlow(OptionsFlowWithReload):
+    """Photo sync settings."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {k: v for k, v in user_input.items() if v}
+            if CONF_IMMICH_ALBUM in data:
+                data[CONF_IMMICH_ALBUM] = clean_album_id(data[CONF_IMMICH_ALBUM])
+            if (CONF_IMMICH_ALBUM in data or CONF_BACKFILL_SINCE in data) and (
+                CONF_IMMICH_ENTRY not in data
+            ):
+                errors["base"] = "immich_required"
+            else:
+                return self.async_create_entry(data=data)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                OPTIONS_SCHEMA, user_input or self.config_entry.options
+            ),
+            errors=errors,
         )

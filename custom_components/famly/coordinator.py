@@ -37,6 +37,7 @@ from .parser import (
 
 if TYPE_CHECKING:
     from . import FamlyConfigEntry
+    from .photo_sync import PhotoSync
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class FamlyCoordinator(DataUpdateCoordinator[FamlyData]):
         self._upcoming_at: dict[str, datetime] = {}
         self._counts: dict[str, int] = {}
         self._refresh_id = 0
+        self.photo_sync: PhotoSync | None = None
 
     async def _async_update_data(self) -> FamlyData:
         try:

@@ -61,6 +61,27 @@ automation:
           message: "Robin woke up at {{ as_timestamp(trigger.to_state.attributes.end) | timestamp_custom('%H:%M') }}"
 ```
 
+## Photo sync to Immich (optional)
+
+Pushes every photo the nursery posts in the news feed to your [Immich](https://immich.app) server, using Home Assistant's own Immich integration. All feed photos are sent, not only ones your child is tagged in, so Immich's face recognition can sort them; delete the ones you don't want there.
+
+**Turn it on:** Settings → Devices & services → Famly → **Configure**:
+
+- **Immich server**: pick your existing Immich integration (required; leave empty to turn sync off)
+- **Album**: optional; paste the album URL or ID from the Immich web app
+- **Also import photos posted since**: optional one-off import of older photos
+
+**How it works**
+
+- Checks the feed **once an hour** (and two minutes after Home Assistant starts). Use the **Sync photos to Immich** button to run it now.
+- Each photo is downloaded into `/media/famly_immich_upload/`, handed to `immich.upload_file`, then **deleted immediately**, whether the upload worked or not. Nothing is kept on Home Assistant; leftovers from an interrupted run are cleaned up at startup.
+- Famly strips all photo metadata, so the post's date and time is written back into the EXIF data and file timestamp before upload. Photos land on the right day in Immich's timeline.
+- Uploaded photo IDs are remembered, so nothing is sent twice. Failed uploads are retried on the next run.
+- Without an import date, the first run only records a starting point: you get photos posted from then on. An import is paced at up to 60 photos per hour, oldest first, until it catches up.
+- The **Photos uploaded to Immich** sensor shows the running total, with the last run, photos still waiting, and the last error as attributes.
+
+Needs the Immich integration set up in Home Assistant with its `immich.upload_file` action available, and a media folder (Home Assistant OS has `/media` by default).
+
 ## Polling
 
 There is no push API, so the integration polls:
@@ -84,6 +105,7 @@ All on `https://app.famly.co` (or `.de`), authenticated with the `x-famly-access
 | `GET /api/v2/images/tagged?childId=&limit=1` | Latest photo |
 | `GET /api/v2/institutions/{id}/openinghours` | Polling schedule |
 | `POST /graphql` `NotificationUpdates` | Unread counts |
+| `GET /api/feed/feed/feed?first=&cursor=&olderThan=` | News feed photos for Immich sync |
 
 ## Trademarks
 
